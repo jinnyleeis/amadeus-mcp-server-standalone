@@ -1,105 +1,118 @@
+// src/index.ts
+
+import express from 'express';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import Amadeus from 'amadeus';
 import dotenv from 'dotenv';
-// Use require instead of import for node-cache
 import NodeCache from 'node-cache';
+import type {
+  RegisteredPrompt,
+  RegisteredTool
+} from '@modelcontextprotocol/sdk/server/mcp.js';
 
-// Define a type for our cache to make TypeScript happy
-type TypedCache = {
-  get: <T>(key: string) => T | undefined;
-  set: <T>(key: string, value: T, ttl?: number) => boolean;
-};
-
-// Load environment variables
 dotenv.config();
 
-// Initialize Amadeus client only if credentials are available
-export let amadeus = null;
-if (process.env.AMADEUS_CLIENT_ID && process.env.AMADEUS_CLIENT_SECRET) {
-  amadeus = new Amadeus({
-    clientId: process.env.AMADEUS_CLIENT_ID,
-    clientSecret: process.env.AMADEUS_CLIENT_SECRET,
-  });
-} else {
-  console.error('Warning: Amadeus credentials not found in environment variables');
-}
+// ————— Amadeus 클라이언트 & 캐시 초기화 —————
+export const amadeus = process.env.AMADEUS_CLIENT_ID && process.env.AMADEUS_CLIENT_SECRET
+  ? new Amadeus({
+      clientId: process.env.AMADEUS_CLIENT_ID,
+      clientSecret: process.env.AMADEUS_CLIENT_SECRET,
+    })
+  : null;
 
-// Create MCP server - FIXED VERSION
-export const server = new McpServer({
-  name: 'amadeus-mcp-server',
-  version: '1.0.0'
-});
 
-// Create a cache instance
-// Default TTL is 10 minutes (600 seconds)
-export const cache = new NodeCache({
-  stdTTL: 600,
-  checkperiod: 120,
-  useClones: false,
-}) as TypedCache;
+export const cache = new NodeCache({ stdTTL: 600, checkperiod: 120, useClones: false })
 
-/**
- * Wrapper for Amadeus API calls with caching
- * @param cacheKey - Key for caching
- * @param ttl - Time to live in seconds
- * @param apiCall - Function that returns a promise with the API call
- * @returns Promise with API response
- */
 export async function cachedApiCall<T>(
   cacheKey: string,
   ttl: number,
   apiCall: () => Promise<T>,
 ): Promise<T> {
-  // Check if we have a cached response
-  const cachedResponse = cache.get<T>(cacheKey);
-  if (cachedResponse) {
-    console.error(`Cache hit for ${cacheKey}`);
-    return cachedResponse;
-  }
-
-  // If not cached, make the API call
-  console.error(`Cache miss for ${cacheKey}, calling API...`);
-  try {
-    const response = await apiCall();
-
-    // Cache the response with the specified TTL
-    cache.set<T>(cacheKey, response, ttl);
-
-    return response;
-  } catch (error: unknown) {
-    console.error(`API call failed for ${cacheKey}:`, error);
-    throw error;
-  }
+  const hit = cache.get<T>(cacheKey);
+  if (hit) return hit;
+  const res = await apiCall();
+  cache.set(cacheKey, res, ttl);
+  return res;
 }
 
-// Start the server
-export async function main() {
-  // Import all components to register tools, resources, and prompts
-  // This ensures they are properly registered with the server
+// ————— MCP 서버 인스턴스 생성 —————
+export const server = new McpServer({
+  name: 'amadeus-mcp-server',
+  version: '1.0.0',
+});
+
+
+// ——— 테스트용 확장: prompts/tools 어레이를 붙인다 ———
+;(server as any).prompts = [] as RegisteredPrompt[];
+;(server as any).tools = [] as RegisteredTool[];
+
+// 원래 prompt/tool 메서드를 래핑해, 등록 시 배열에도 담아 준다
+const _origPrompt = server.prompt;
+server.prompt = (name:any, cb:any) => {
+  const registered = _origPrompt.call(server, name, cb);
+  (server as any).prompts.push(registered);
+  return registered;
+};
+
+const _origTool = server.tool;
+server.tool = (name, cb) => {
+  const registered = _origTool.call(server, name, cb);
+  (server as any).tools.push(registered);
+  return registered;
+};
+
+async function initMcp() {
+  // 툴, 리소스, 프롬프트 등록
   await Promise.all([
     import('./tools.js'),
     import('./resources.js'),
-    import('./prompt.js')
+    import('./prompt.js'),
   ]);
-
-  // Start server
-  console.error('Starting Amadeus Flight MCP Server...');
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error('Amadeus Flight MCP Server running');
 }
 
-// Only run main if this file is being run directly
-import { fileURLToPath } from 'url';
-import { dirname } from 'path';
+export async function main() {
+  await initMcp();
+  console.error('🚀 MCP Server initialized');
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+  // 1) Streamable HTTP transport 생성 (port 옵션 제거!)
+  const transport = new StreamableHTTPServerTransport({
+    // stateful 모드 쓰려면 sessionIdGenerator: () => crypto.randomUUID()
+    sessionIdGenerator: undefined,  // stateless 모드
+  });
+  await server.connect(transport);
+  console.error('✅ Transport connected');
 
-if (process.argv[1] === __filename) {
-  main().catch((error: unknown) => {
-    console.error('Fatal error:', error);
+  // 2) Express 앱으로 /mcp 엔드포인트 열기
+  const app = express();
+  app.use(express.json());
+
+  app.post('/mcp', async (req, res) => {
+    try {
+      // 공식문서대로 handleRequest에 req, res, body 넘김
+      await transport.handleRequest(req, res, req.body);
+    } catch (err) {
+      console.error('MCP request error:', err);
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: '2.0',
+          error: { code: -32603, message: 'Internal error' },
+          id: null,
+        });
+      }
+    }
+  });
+
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => {
+    console.log(`🚀 Amadeus Flight MCP Server HTTP listening on http://localhost:${PORT}/mcp`);
+  });
+}
+
+// CLI로 직접 실행할 때만
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch(err => {
+    console.error(err);
     process.exit(1);
   });
 }
