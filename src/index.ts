@@ -6,10 +6,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import Amadeus from 'amadeus';
 import dotenv from 'dotenv';
 import NodeCache from 'node-cache';
-import type {
-  RegisteredPrompt,
-  RegisteredTool
-} from '@modelcontextprotocol/sdk/server/mcp.js';
+
 
 dotenv.config();
 
@@ -21,8 +18,13 @@ export const amadeus = process.env.AMADEUS_CLIENT_ID && process.env.AMADEUS_CLIE
     })
   : null;
 
+  // Define a type for our cache to make TypeScript happy
+type TypedCache = {
+  get: <T>(key: string) => T | undefined;
+  set: <T>(key: string, value: T, ttl?: number) => boolean;
+};
 
-export const cache = new NodeCache({ stdTTL: 600, checkperiod: 120, useClones: false })
+export const cache = new NodeCache({ stdTTL: 600, checkperiod: 120, useClones: false }) as TypedCache;
 
 export async function cachedApiCall<T>(
   cacheKey: string,
@@ -42,25 +44,6 @@ export const server = new McpServer({
   version: '1.0.0',
 });
 
-
-// ——— 테스트용 확장: prompts/tools 어레이를 붙인다 ———
-;(server as any).prompts = [] as RegisteredPrompt[];
-;(server as any).tools = [] as RegisteredTool[];
-
-// 원래 prompt/tool 메서드를 래핑해, 등록 시 배열에도 담아 준다
-const _origPrompt = server.prompt;
-server.prompt = (name:any, cb:any) => {
-  const registered = _origPrompt.call(server, name, cb);
-  (server as any).prompts.push(registered);
-  return registered;
-};
-
-const _origTool = server.tool;
-server.tool = (name, cb) => {
-  const registered = _origTool.call(server, name, cb);
-  (server as any).tools.push(registered);
-  return registered;
-};
 
 async function initMcp() {
   // 툴, 리소스, 프롬프트 등록

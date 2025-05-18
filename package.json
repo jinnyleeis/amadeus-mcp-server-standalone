@@ -41,7 +41,7 @@
   "author": "Privilege Mendes",
   "license": "MIT",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.7.0",
+    "@modelcontextprotocol/sdk": "^1.11.4",
     "amadeus": "^7.1.0",
     "dotenv": "^16.0.3",
     "express": "^4.18.2",
