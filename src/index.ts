@@ -1,9 +1,9 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-const Amadeus = require('amadeus');
+import Amadeus from 'amadeus';
 import dotenv from 'dotenv';
 // Use require instead of import for node-cache
-const NodeCache = require('node-cache');
+import NodeCache from 'node-cache';
 
 // Define a type for our cache to make TypeScript happy
 type TypedCache = {
@@ -91,7 +91,13 @@ export async function main() {
 }
 
 // Only run main if this file is being run directly
-if (require.main === module) {
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+if (process.argv[1] === __filename) {
   main().catch((error: unknown) => {
     console.error('Fatal error:', error);
     process.exit(1);
